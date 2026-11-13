@@ -9499,7 +9499,7 @@ namespace online {
     }
 
     void recRewind(int frame) {
-        while (!rec.inputs.empty() && rec.inputs.back().first >= frame) {
+        while (!rec.inputs.empty() && rec.inputs.back().frame >= frame) {
             rec.inputs.pop_back();
         }
         while (!rec.fixes.empty() && rec.fixes.back().frame >= frame) {
