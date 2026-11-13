@@ -8,9 +8,9 @@
 	},
 	"version": "v3.2.0",
 	"id": "basu.input-buffer",
-	"name": "Click Before Frames",
-	"developer": "BASU",
-	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction. github.com/raresdalas1009/-predictive-input-buffer",
+	"name": "sll0rd's client",
+	"developers": ["BASU", "sll0rd"],
+	"description": "sll0rd's client: a modified build of Click Before Frames by BASU. Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction. github.com/raresdalas1009/-predictive-input-buffer",
 	"settings": {
 		"custom-ticks": {
 			"type": "int",
@@ -512,6 +512,21 @@
 			"category": "gameplay",
 			"default": [
 				"F11"
+			]
+		},
+		"record-macro": {
+			"type": "bool",
+			"name": "Record Practice Macro",
+			"description": "Records the inputs the game really gets (after the buffer) while you play in practice mode, and saves them to the Macros folder as a GDR macro when you finish the level, or when you press the save key. A respawn from a checkpoint cuts the recording back to it.",
+			"default": false
+		},
+		"bind-save-macro": {
+			"type": "keybind",
+			"name": "Key: save the recorded macro now",
+			"description": "Works inside a level, with Record Practice Macro on.",
+			"category": "gameplay",
+			"default": [
+				"F2"
 			]
 		},
 		"bind-autoplay": {
