@@ -529,6 +529,33 @@
 				"F2"
 			]
 		},
+		"bind-master-off": {
+			"type": "keybind",
+			"name": "Key: master off / on",
+			"description": "Turns the buffer off and stops autoplay and recording; press again to turn the buffer back on. Works inside a level.",
+			"category": "gameplay",
+			"default": [
+				"F3"
+			]
+		},
+		"bind-spam-test": {
+			"type": "keybind",
+			"name": "Key: spam test",
+			"description": "Click as fast as you can for 5 seconds; shows your average and best clicks per second.",
+			"category": "gameplay",
+			"default": [
+				"F4"
+			]
+		},
+		"bind-record-toggle": {
+			"type": "keybind",
+			"name": "Key: record macro on / off",
+			"description": "Turns Record Practice Macro on or off while you play.",
+			"category": "gameplay",
+			"default": [
+				"F5"
+			]
+		},
 		"bind-autoplay": {
 			"type": "keybind",
 			"name": "Key: start / stop autoplay",
