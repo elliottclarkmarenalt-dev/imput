@@ -9471,6 +9471,119 @@ namespace online {
         return static_cast<int>(layer->m_gameState.m_currentProgress) / per + macroOffsetSetting + autoplay.macroAutoOffset;
     }
 
+    // v3.3 macro recorder (setting "Record Practice Macro"): the inputs the game really receives in
+    // practice mode (after the buffer moved them), plus your position every 8 steps, saved as a GDR
+    // macro that autoplay can replay. A respawn from a checkpoint rewinds the recording to it.
+    struct RecIn {
+        int frame;
+        bool down;
+        bool p2;
+    };
+    struct RecFix {
+        int frame;
+        float x, y, r;
+        bool dual;
+        float x2, y2, r2;
+    };
+    struct Recorder {
+        bool enabled = false;
+        int age = 0;
+        int lastFrame = -1;
+        std::vector<RecIn> inputs;
+        std::vector<RecFix> fixes;
+    };
+    Recorder rec;
+
+    int recFrame(PlayLayer* layer) {
+        return static_cast<int>(layer->m_gameState.m_currentProgress) / progressPerStepNow();
+    }
+
+    void recRewind(int frame) {
+        while (!rec.inputs.empty() && rec.inputs.back().first >= frame) {
+            rec.inputs.pop_back();
+        }
+        while (!rec.fixes.empty() && rec.fixes.back().frame >= frame) {
+            rec.fixes.pop_back();
+        }
+        rec.lastFrame = frame;
+    }
+
+    PlayLayer* recLayer(GJBaseGameLayer* base) {
+        auto* layer = typeinfo_cast<PlayLayer*>(base);
+        if (!layer || !rec.enabled || autoplay.active || buf.simulating || !layer->m_isPracticeMode) {
+            return nullptr;
+        }
+        return layer;
+    }
+
+    void recTick(GJBaseGameLayer* base) {
+        if (--rec.age < 0) {
+            rec.age = 60;
+            rec.enabled = Mod::get()->getSettingValue<bool>("record-macro");
+        }
+        auto* layer = recLayer(base);
+        if (!layer) {
+            return;
+        }
+        int f = recFrame(layer);
+        if (f < rec.lastFrame) {
+            recRewind(f);  // respawned from a checkpoint (or restarted): drop what came after
+        }
+        rec.lastFrame = f;
+        if (f % 8 == 0 && layer->m_player1 && (rec.fixes.empty() || rec.fixes.back().frame < f)) {
+            auto* q = layer->m_player2;
+            bool dual = layer->m_gameState.m_isDualMode && q;
+            rec.fixes.push_back({ f, layer->m_player1->getPositionX(), layer->m_player1->getPositionY(), layer->m_player1->getRotation(), dual,
+                dual ? q->getPositionX() : 0.f, dual ? q->getPositionY() : 0.f, dual ? q->getRotation() : 0.f });
+        }
+    }
+
+    void recInput(GJBaseGameLayer* base, bool down, bool isPlayer1) {
+        auto* layer = recLayer(base);
+        if (!layer) {
+            return;
+        }
+        int f = recFrame(layer);
+        if (f < rec.lastFrame) {
+            recRewind(f);
+        }
+        rec.lastFrame = f;
+        rec.inputs.push_back({ f, down, !isPlayer1 });
+    }
+
+    void recSave(PlayLayer* layer) {
+        if (!layer || !layer->m_level || rec.inputs.empty()) {
+            say("recorder: nothing recorded yet (turn on Record Practice Macro and play in practice mode)");
+            return;
+        }
+        std::string name = layer->m_level->m_levelName;
+        for (auto& c : name) {
+            if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 32) {
+                c = '_';
+            }
+        }
+        std::string in, fx;
+        for (auto const& i : rec.inputs) {
+            in += fmt::format("{}{{\"frame\":{},\"btn\":1,\"2p\":{},\"down\":{}}}", in.empty() ? "" : ",", i.frame, i.p2 ? "true" : "false", i.down ? "true" : "false");
+        }
+        for (auto const& a : rec.fixes) {
+            fx += fmt::format("{}{{\"frame\":{},\"p1\":{{\"x\":{:.3f},\"y\":{:.3f},\"r\":{:.3f}}}", fx.empty() ? "" : ",", a.frame, a.x, a.y, a.r);
+            if (a.dual) {
+                fx += fmt::format(",\"p2\":{{\"x\":{:.3f},\"y\":{:.3f},\"r\":{:.3f}}}", a.x2, a.y2, a.r2);
+            }
+            fx += "}";
+        }
+        int id = layer->m_level->m_levelID.value();
+        std::string json = fmt::format("{{\"author\":\"CBF recorder\",\"bot\":{{\"name\":\"CBF\"}},\"level\":{{\"id\":{},\"name\":\"{}\"}},\"framerate\":{},\"gameVersion\":2.2081,\"platformer\":false,\"inputs\":[{}],\"frameFixes\":[{}]}}",
+            id, name, static_cast<int>(std::lround(physicsTps())), in, fx);
+        std::error_code ec;
+        std::filesystem::create_directories(macroDir(), ec);
+        auto path = macroDir() / fmt::format("{}_cbf-rec.gdr.json", id);
+        std::ofstream out(path, std::ios::binary);
+        out << json;
+        say("recorder: saved {} inputs to {} (open Macros to find it)", rec.inputs.size(), path.filename().string());
+    }
+
     // test 73: a macro without position records only lines up from the level's start (test 71/72
     // played it by step from a start position too: the wrong inputs in the wrong places)
     bool macroUsable(PlayLayer* layer) {
@@ -10744,7 +10857,7 @@ public:
 
     static ccColor3B accentColor() {
         if (!Mod::get()->hasSavedValue("ui-accent")) {
-            return { 255, 46, 59 };  // v3.2: the website's red
+            return { 168, 110, 255 };  // default accent matches the new logo (violet); pick another in the menu
         }
         int i = Mod::get()->getSavedValue<int>("ui-accent", 0);
         if (i >= 0 && i < static_cast<int>(std::size(ACCENTS))) {
@@ -11161,7 +11274,7 @@ private:
         auto* clip = CCClippingNode::create(stencil);
         m_frame->addChild(clip, -2);
         ccColor3B back = Mod::get()->hasSavedValue("ui-bg") ? BACKS[std::clamp(m_bg, 0, static_cast<int>(std::size(BACKS)) - 1)]
-                                                             : ccColor3B { 20, 20, 24 };  // v3.2: the website's near-black
+                                                             : ccColor3B { 18, 12, 38 };  // cleaner look: deep violet-black to match the new logo
         GLubyte a = static_cast<GLubyte>(253 * opacity);
         CCLayerGradient* sky = nullptr;
         if (m_light) {
@@ -11184,11 +11297,11 @@ private:
             // v3.2: TV static over the background, with scan lines, like the website
             m_static = CCSprite::createWithTexture(noiseTexture(), CCRect(0.f, 0.f, W, H));
             m_static->setAnchorPoint({ 0.f, 0.f });
-            m_static->setOpacity(46);
+            m_static->setOpacity(14);  // cleaner look: static much fainter
             clip->addChild(m_static);
             auto* scan = CCDrawNode::create();
             for (float y = 0.f; y < H; y += 3.f) {
-                scan->drawSegment({ 0.f, y }, { W, y }, 0.35f, { 0.f, 0.f, 0.f, 0.28f });
+                scan->drawSegment({ 0.f, y }, { W, y }, 0.35f, { 0.f, 0.f, 0.f, 0.10f });
             }
             clip->addChild(scan);
         }
@@ -11253,10 +11366,12 @@ private:
         m_eye->setPosition({ 13.f + m_eyeW / 2.f, H - 27.f });
         m_frame->addChild(m_eye, 2);
         for (int i = 3; i >= 1; --i) {
-            auto* g = label(m_frame, "CBF", 0.95f + i * 0.04f, m_t.main, { 48.f - i * 1.2f, H - 25.f }, { 0.f, 0.5f }, true);
+            auto* g = label(m_frame, "sll0rd", 0.95f + i * 0.04f, m_t.main, { 48.f - i * 1.2f, H - 25.f }, { 0.f, 0.5f }, true);
+            g->limitLabelWidth(SIDE - 56.f, 0.95f + i * 0.04f, 0.3f);
             g->setOpacity(static_cast<GLubyte>(35 / i));
         }
-        label(m_frame, "CBF", 0.95f, m_light ? m_t.main : m_t.soft, { 48.f, H - 25.f }, { 0.f, 0.5f }, true);
+        label(m_frame, "sll0rd", 0.95f, m_light ? m_t.main : m_t.soft, { 48.f, H - 25.f }, { 0.f, 0.5f }, true)
+            ->limitLabelWidth(SIDE - 56.f, 0.95f, 0.3f);
         label(m_frame, Mod::get()->getVersion().toVString(), 0.3f, m_muted, { 48.f, H - 43.f }, { 0.f, 0.5f }, true)
             ->limitLabelWidth(SIDE - 56.f, 0.3f, 0.15f);
         auto* sep = CCLayerColor::create({ m_t.main.r, m_t.main.g, m_t.main.b, 110 }, SIDE - 28.f, 1.f);
@@ -11441,6 +11556,9 @@ private:
             auto* d = CCDrawNode::create();
             if (active) {
                 roundRect(d, { 0.f, 0.f, tw, th }, 7.f, col(m_t.main, m_light ? 0.25f : 0.22f), 0.6f, col(m_t.main, 0.7f));
+            }
+            if (active) {
+                roundRect(d, { 0.f, 3.f, 2.5f, th - 6.f }, 1.2f, col(m_t.main, 1.f));  // accent bar, like the new design
             }
             circle(d, { 10.f, th / 2.f }, 2.2f, active ? col(m_t.soft, 1.f) : col(m_muted, 0.7f), 14);
             node->addChild(d);
@@ -12582,7 +12700,7 @@ $on_mod(Loaded) {
         AllocConsole();
         FILE* out = nullptr;
         freopen_s(&out, "CONOUT$", "w", stdout);
-        SetConsoleTitleA("Click Before Frames - Live Console");
+        SetConsoleTitleA("sll0rd's client - Live Console");
     }
 #endif
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
@@ -12592,7 +12710,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("Click Before Frames v3.0 loaded. Stage key cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("sll0rd's client (Click Before Frames build) loaded. Stage key cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -12729,6 +12847,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         exportLines.clear();
         logClock = 0;
         loadMemory(level);
+        rec = Recorder {};
         if (statsKey != memoryKey) {
             statsKey = memoryKey;
             sessionStats = {};
@@ -12782,7 +12901,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panel->addChild(frame);
         }
 
-        auto* title = CCLabelBMFont::create("Click Before Frames", "goldFont.fnt");
+        auto* title = CCLabelBMFont::create("sll0rd's client", "goldFont.fnt");
         title->setScale(0.55f);
         title->setAnchorPoint({ 0.f, 0.5f });
         title->setPosition({ 10.f, H - 14.f });
@@ -12924,6 +13043,9 @@ class $modify(BufPlayLayer, PlayLayer) {
     void levelComplete() {
         bool wasGenerating = autoplay.active && autoplay.layer == this && autoplay.generating;
         autoplayFinished(this);
+        if (rec.enabled && m_isPracticeMode && !wasGenerating) {
+            recSave(this);
+        }
         if (wasGenerating) {
             return;  // the hidden run reached the end: no end screen, the shown run starts next frame
         }
@@ -13395,6 +13517,9 @@ namespace {
                 saveMemory();
                 say("memory for this level cleared");
                 break;
+            case 7:
+                recSave(layer);
+                break;
             case 6: {
                 // F1 (default): start / stop autoplay, same as the Start / Stop Autoplay button
                 if (autoplay.active) {
@@ -13411,8 +13536,8 @@ namespace {
     }
 
     void setupKeybinds() {
-        char const* binds[] = { "bind-stage", "bind-menu", "bind-export", "bind-console", "bind-path", "bind-forget", "bind-autoplay" };
-        for (int i = 0; i < 7; ++i) {
+        char const* binds[] = { "bind-stage", "bind-menu", "bind-export", "bind-console", "bind-path", "bind-forget", "bind-autoplay", "bind-save-macro" };
+        for (int i = 0; i < 8; ++i) {
             listenForKeybindSettingPresses(binds[i], [i](Keybind const&, bool down, bool repeat, double) {
                 if (down && !repeat) {
                     keyAction(i);
@@ -13548,7 +13673,7 @@ namespace {
         }
         updateShown = true;
         say("update: {} is out (you have {})", latestVersion, Mod::get()->getVersion().toVString());
-        createQuickPopup("Click Before Frames", fmt::format("<cp>{}</c> is out! You have {}.{}", latestVersion,
+        createQuickPopup("sll0rd's client", fmt::format("<cp>{}</c> is out! You have {}.{}", latestVersion,
             Mod::get()->getVersion().toVString(), latestNotes.empty() ? std::string() : "\n\n" + latestNotes), "Later", INSTALL_UPDATES ? "Update now" : "Open page", [](FLAlertLayer*, bool yes) {
                 if (!yes) {
                     return;
@@ -13746,6 +13871,7 @@ static double tpsCarry = 0.0;
 class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     // test 72: macro inputs go in here, at the start of the step, the way bots press them
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        recTick(this);
         if (autoplay.active && !buf.simulating && static_cast<GJBaseGameLayer*>(autoplay.layer) == static_cast<GJBaseGameLayer*>(this)) {
             macroStep(autoplay.layer);
         }
@@ -14068,6 +14194,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         }
         if (!buf.simulating && button == 1) {
             benchInput(down);  // v2.75: what the game really gets (your clicks and delayed ones)
+            recInput(this, down, isPlayer1);
         }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
